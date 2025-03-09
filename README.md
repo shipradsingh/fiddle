@@ -42,7 +42,7 @@ pip install -r requirements.txt
 Key dependencies include TensorFlow/PyTorch, Librosa, NumPy, Matplotlib, and Scikit-learn.
 
 ### 2. Download the Dataset
-The project uses the **GTZAN dataset** for training and evaluation. You can download it from [here](http://marsyas.info/downloads/datasets.html) and place it in the `data/` directory.
+The project uses the **GTZAN dataset** for training and evaluation. You can download it from [here](https://www.kaggle.com/datasets/andradaolteanu/gtzan-dataset-music-genre-classification) and place it in the `data/` directory.
 
 ### 3. Run Feature Extraction
 To preprocess audio and extract features, run:

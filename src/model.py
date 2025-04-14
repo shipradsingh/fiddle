@@ -1,6 +1,10 @@
 import torch
 import torch.nn as nn
 
+"""
+CNN feature extractor block. This is shared across both branches of the Siamese model.
+The input should be (batch_size, 1, 128, time). This architecture is simple but effective.
+"""
 class CNNBranch(nn.Module):
     def __init__(self):
         super(CNNBranch, self).__init__()
@@ -16,7 +20,7 @@ class CNNBranch(nn.Module):
         )
         self.fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(64 * 30 * 30, 128)
+            nn.Linear(64 * 30 * 30, 128)  # TODO: Adjust this if your input spectrogram shape changes
         )
 
     def forward(self, x):
@@ -24,6 +28,10 @@ class CNNBranch(nn.Module):
         x = self.fc(x)
         return x
 
+"""
+Siamese network compares two audio spectrogram embeddings.
+Computes the absolute difference between the feature vectors and feeds it to a dense output.
+"""
 class SiameseNetwork(nn.Module):
     def __init__(self):
         super(SiameseNetwork, self).__init__()

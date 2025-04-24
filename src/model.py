@@ -6,8 +6,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 class CNNBranch(nn.Module):
-    """CNN feature extractor for audio spectrograms."""
+    """CNN feature extractor matching project requirements.
     
+    Architecture:
+    - Conv2D (32, 3x3) → ReLU → MaxPool
+    - Conv2D (64, 3x3) → ReLU → MaxPool
+    - BatchNorm, Dropout (0.3)
+    - Flatten → Dense(128)
+    """
     def __init__(self, embedding_dim: int = 128, dropout_rate: float = 0.3):
         super(CNNBranch, self).__init__()
         
@@ -16,20 +22,14 @@ class CNNBranch(nn.Module):
             nn.Conv2d(1, 32, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(2),
-            nn.BatchNorm2d(32),
             
             # Second conv block: (32, 64, 65) -> (64, 32, 33)
             nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(2),
+            
+            # Add BatchNorm and Dropout as per requirements
             nn.BatchNorm2d(64),
-            
-            # Third conv block: (64, 32, 33) -> (128, 16, 17)
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.BatchNorm2d(128),
-            
             nn.Dropout(dropout_rate)
         )
         
@@ -40,12 +40,10 @@ class CNNBranch(nn.Module):
             flat_size = conv_out.numel()
             logger.debug(f"Flattened size: {flat_size}")
         
+        # Final dense layer to embedding_dim as per requirements
         self.fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(flat_size, 512),  # Added intermediate layer
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(512, embedding_dim),
+            nn.Linear(flat_size, embedding_dim),
             nn.BatchNorm1d(embedding_dim)
         )
 
@@ -69,20 +67,21 @@ class CNNBranch(nn.Module):
             logger.debug(f"Output shape: {x.shape}")
             
         return x
+
 class SiameseNetwork(nn.Module):
     """Siamese network for audio similarity comparison.
     
     Architecture:
-        - Shared CNN branch for feature extraction
-        - L1 distance between embeddings
-        - Dense layer for similarity prediction
-        
+    - Shared CNN branch for feature extraction
+    - L1 distance between embeddings
+    - Dense layer for similarity prediction
+    
     Args:
-        embedding_dim: Dimension of the embedding space
-        dropout_rate: Dropout rate for regularization
-        
+        embedding_dim: Dimension of the embedding space (128 as per requirements)
+        dropout_rate: Dropout rate for regularization (0.3 as per requirements)
+    
     Input shapes: 
-        - x1, x2: (batch_size, 1, 128, time)
+        - x1, x2: (batch_size, 1, 128, 130)
     Output shape: 
         - similarity: (batch_size, 1)
     """
@@ -139,11 +138,11 @@ if __name__ == "__main__":
     
     # Test model
     model = SiameseNetwork()
-    model.eval()  # Set to evaluation mode
+    model.eval()
     
     try:
-        # Test default batch size
-        x1 = torch.randn(32, 1, 128, 130)
+        # Test input shape from project requirements
+        x1 = torch.randn(32, 1, 128, 130)  # Matches spectrogram shape
         x2 = torch.randn(32, 1, 128, 130)
         
         with torch.no_grad():
@@ -152,8 +151,10 @@ if __name__ == "__main__":
             print(f"Output shape: {y.shape}")
             print(f"Output range: [{y.min():.3f}, {y.max():.3f}]")
             
+            # Test embedding dimension
             emb = model.get_embedding(x1)
             print(f"Embedding shape: {emb.shape}")
+            assert emb.shape[1] == 128, "Embedding dimension should be 128"
             
         # Test different batch sizes
         batch_sizes = [1, 16, 64]

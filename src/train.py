@@ -4,36 +4,131 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import logging
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 import json
 from datetime import datetime
 import pandas as pd
 import numpy as np
 import soundfile as sf
 import random
+import librosa
 
 from model import SiameseNetwork
 from dataset import PairedAudioDataset
+from evaluate import evaluate_model
 
 logger = logging.getLogger(__name__)
 
 class TrainingConfig:
-    """Training configuration."""
+    """Training configuration matching project requirements."""
     def __init__(self, **kwargs):
-        self.epochs: int = kwargs.get('epochs', 20)
-        self.batch_size: int = kwargs.get('batch_size', 11)  # Changed to match your data
-        self.learning_rate: float = kwargs.get('learning_rate', 1e-3)
+        self.epochs: int = kwargs.get('epochs', 50)  # As per project spec
+        self.batch_size: int = kwargs.get('batch_size', 32)
+        self.learning_rate: float = kwargs.get('learning_rate', 1e-4)
         self.val_freq: int = kwargs.get('val_freq', 1)
         self.checkpoint_dir: str = kwargs.get('checkpoint_dir', 'checkpoints')
         self.device: str = kwargs.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
 
-def train_epoch(
-    model: nn.Module,
-    train_loader: DataLoader,
-    criterion: nn.Module,
-    optimizer: optim.Optimizer,
-    device: str
-) -> tuple[float, float]:
+def apply_audio_transform(signal: np.ndarray, sr: int, transform_type: str) -> np.ndarray:
+    """Apply audio transformations as per project requirements."""
+    if transform_type == 'pitch':
+        n_steps = np.random.uniform(-2, 2)
+        return librosa.effects.pitch_shift(signal, sr=sr, n_steps=n_steps)
+    elif transform_type == 'tempo':
+        rate = np.random.uniform(0.8, 1.2)
+        return librosa.effects.time_stretch(signal, rate=rate)
+    elif transform_type == 'noise':
+        noise = np.random.normal(0, 0.01, len(signal))
+        return signal + noise
+    elif transform_type == 'reverb':
+        return librosa.effects.reverb(signal, sr=sr)
+    return signal
+
+def save_experiment_config(config: Dict, metrics: Dict, save_dir: str):
+    """Save full experiment configuration and results."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_path = Path(save_dir) / f"experiment_{timestamp}"
+    save_path.mkdir(parents=True, exist_ok=True)
+    
+    # Save configuration
+    with open(save_path / "config.json", "w") as f:
+        json.dump({
+            'training_config': config,
+            'results': metrics,
+            'timestamp': timestamp
+        }, f, indent=4)
+    
+    return save_path
+
+def create_dataset(base_audio_dir: str, output_dir: str) -> Tuple[str, str]:
+    """Create dataset from real audio files with required transformations."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True)
+    
+    audio_files = []
+    pairs = []
+    
+    # Process base audio files
+    for audio_path in Path(base_audio_dir).glob('*.wav'):
+        signal, sr = librosa.load(str(audio_path), sr=22050, duration=3.0)
+        
+        # Save original
+        orig_path = output_dir / f"orig_{audio_path.name}"
+        sf.write(orig_path, signal, sr)
+        audio_files.append(str(orig_path))
+        
+        # Create transformed versions
+        for transform in ['pitch', 'tempo', 'noise', 'reverb']:
+            trans_signal = apply_audio_transform(signal, sr, transform)
+            trans_path = output_dir / f"{transform}_{audio_path.name}"
+            sf.write(trans_path, trans_signal, sr)
+            
+            # Create positive pair
+            pairs.append({
+                'clip1_path': str(orig_path),
+                'clip2_path': str(trans_path),
+                'label': 1,
+                'transform': transform
+            })
+    
+    # Create negative pairs
+    n_positive = len(pairs)
+    for _ in range(n_positive):
+        file1, file2 = random.sample(audio_files, 2)
+        pairs.append({
+            'clip1_path': file1,
+            'clip2_path': file2,
+            'label': 0,
+            'transform': 'none'
+        })
+    
+    # Split into train/val
+    random.shuffle(pairs)
+    n_train = int(0.8 * len(pairs))
+    
+    train_pairs = pairs[:n_train]
+    val_pairs = pairs[n_train:]
+    
+    # Save to CSV
+    train_csv = output_dir / 'train_pairs.csv'
+    val_csv = output_dir / 'val_pairs.csv'
+    
+    pd.DataFrame(train_pairs).to_csv(train_csv, index=False)
+    pd.DataFrame(val_pairs).to_csv(val_csv, index=False)
+    
+    logger.info(f"Created {len(train_pairs)} training pairs and {len(val_pairs)} validation pairs")
+    logger.info(f"Training pairs: {sum(p['label'] == 1 for p in train_pairs)} positive, "
+               f"{sum(p['label'] == 0 for p in train_pairs)} negative")
+    logger.info(f"Validation pairs: {sum(p['label'] == 1 for p in val_pairs)} positive, "
+               f"{sum(p['label'] == 0 for p in val_pairs)} negative")
+    
+    return str(train_csv), str(val_csv)
+
+def train_epoch(model: nn.Module,
+                train_loader: DataLoader,
+                criterion: nn.Module,
+                optimizer: optim.Optimizer,
+                device: str) -> Tuple[float, float]:
     """Train for one epoch."""
     model.train()
     total_loss = 0
@@ -41,40 +136,30 @@ def train_epoch(
     total = 0
     
     for batch_idx, (x1, x2, label) in enumerate(train_loader):
-        # Move data to device
-        x1 = x1.to(device)  # Shape: [batch, 1, height, width]
-        x2 = x2.to(device)  # Shape: [batch, 1, height, width]
-        label = label.to(device).squeeze()  # Shape: [batch]
+        x1, x2 = x1.to(device), x2.to(device)
+        label = label.to(device).squeeze()
         
-        # Forward pass
         optimizer.zero_grad()
-        output = model(x1, x2).squeeze()  # Ensure output is [batch]
+        output = model(x1, x2).squeeze()
         loss = criterion(output, label)
         
-        # Backward pass
         loss.backward()
         optimizer.step()
         
-        # Track metrics
         total_loss += loss.item()
         pred = (output > 0.5).float()
         correct += (pred == label).sum().item()
         total += label.size(0)
         
-        if batch_idx % 10 == 0:
-            logger.debug(f"Batch {batch_idx}: Loss = {loss.item():.4f}")
-    
     epoch_loss = total_loss / len(train_loader)
     accuracy = correct / total
     return epoch_loss, accuracy
 
 @torch.no_grad()
-def validate(
-    model: nn.Module,
-    val_loader: DataLoader,
-    criterion: nn.Module,
-    device: str
-) -> tuple[float, float]:
+def validate(model: nn.Module,
+             val_loader: DataLoader,
+             criterion: nn.Module,
+             device: str) -> Tuple[float, float]:
     """Validate the model."""
     model.eval()
     total_loss = 0
@@ -82,12 +167,10 @@ def validate(
     total = 0
     
     for x1, x2, label in val_loader:
-        # Move data to device
-        x1 = x1.to(device)
-        x2 = x2.to(device)
-        label = label.to(device).squeeze()  # Shape: [batch]
+        x1, x2 = x1.to(device), x2.to(device)
+        label = label.to(device).squeeze()
         
-        output = model(x1, x2).squeeze()  # Shape: [batch]
+        output = model(x1, x2).squeeze()
         loss = criterion(output, label)
         
         total_loss += loss.item()
@@ -99,44 +182,17 @@ def validate(
     accuracy = correct / total
     return val_loss, accuracy
 
-def save_checkpoint(
-    model: nn.Module,
-    optimizer: optim.Optimizer,
-    epoch: int,
-    loss: float,
-    checkpoint_dir: str
-) -> str:
-    """Save model checkpoint."""
-    checkpoint_dir = Path(checkpoint_dir)
-    checkpoint_dir.mkdir(exist_ok=True)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    checkpoint_path = checkpoint_dir / f"checkpoint_epoch_{epoch}_{timestamp}.pt"
-    
-    torch.save({
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'loss': loss,
-    }, checkpoint_path)
-    
-    return str(checkpoint_path)
-
-def train(
-    train_csv: str,
-    val_csv: str,
-    config: Optional[Dict] = None
-) -> nn.Module:
-    """Main training function."""
-    # Setup
+def train(train_csv: str,
+          val_csv: str,
+          config: Optional[Dict] = None) -> nn.Module:
+    """Main training function with early stopping."""
     if config is None:
         config = TrainingConfig()
     else:
         config = TrainingConfig(**config)
     
     logger.info(f"Training on device: {config.device}")
-    patience = 5
-    no_improve = 0
+    
     # Data loading
     train_dataset = PairedAudioDataset(train_csv)
     val_dataset = PairedAudioDataset(val_csv)
@@ -160,153 +216,129 @@ def train(
     criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
     
-    # Training loop
-    best_val_loss = float('inf')
+    # Add learning rate scheduler
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        factor=0.5,
+        patience=3,
+        verbose=True
+    )
     
     for epoch in range(config.epochs):
-        # Train
         train_loss, train_acc = train_epoch(
             model, train_loader, criterion, optimizer, config.device
         )
-        logger.info(
-            f"Epoch {epoch+1}/{config.epochs} - "
-            f"Train Loss: {train_loss:.4f}, "
-            f"Train Acc: {train_acc:.4f}"
+        
+        val_loss, val_acc = validate(
+            model, val_loader, criterion, config.device
         )
         
-        # Validate
-        if (epoch + 1) % config.val_freq == 0:
-            val_loss, val_acc = validate(
-                model, val_loader, criterion, config.device
-            )
-            logger.info(
-                f"Validation - "
-                f"Loss: {val_loss:.4f}, "
-                f"Acc: {val_acc:.4f}"
-            )
-            
-            # Save best model
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                checkpoint_path = save_checkpoint(
-                    model, optimizer, epoch, val_loss, config.checkpoint_dir
-                )
-                logger.info(f"Saved best model to {checkpoint_path}")
-            
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                no_improve = 0
-            else:
-                no_improve += 1
-            
-            if no_improve >= patience:
-                logger.info(f"Early stopping at epoch {epoch}")
-                break
+        # Update learning rate
+        scheduler.step(val_loss)
+        
+        logger.info(
+            f"Epoch {epoch+1}/{config.epochs} - "
+            f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
+            f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}"
+        )
+        
+        # Save best model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            no_improve = 0
+            checkpoint_path = Path(config.checkpoint_dir) / f"best_model.pt"
+            checkpoint_path.parent.mkdir(exist_ok=True)
+            torch.save(model.state_dict(), checkpoint_path)
+            logger.info(f"Saved best model to {checkpoint_path}")
+        else:
+            no_improve += 1
+        
+        if no_improve >= patience:
+            logger.info(f"Early stopping at epoch {epoch+1}")
+            break
+    
     return model
 
-def create_test_data():
-    # Setup directories
-    data_dir = Path('data')
-    audio_dir = data_dir / 'audio'
-    data_dir.mkdir(exist_ok=True)
-    audio_dir.mkdir(exist_ok=True)
+def log_experiment_results(config: Dict, metrics: Dict, save_dir: str):
+    """Log comprehensive experiment results as required by project."""
+    save_dir = Path(save_dir)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Audio parameters
-    sr = 22050  # Sample rate
-    duration = 3  # Duration in seconds
-    t = np.linspace(0, duration, int(sr * duration))  # Time vector
+    # Create experiment summary
+    summary = {
+        'timestamp': timestamp,
+        'config': config,
+        'training_metrics': {
+            'final_train_loss': metrics['train_loss'][-1],
+            'final_train_acc': metrics['train_acc'][-1],
+            'final_val_loss': metrics['val_loss'][-1],
+            'final_val_acc': metrics['val_acc'][-1],
+            'best_val_loss': min(metrics['val_loss']),
+            'epochs_trained': len(metrics['train_loss'])
+        },
+        'evaluation_metrics': metrics['evaluation']
+    }
     
-    # Increase number of samples
-    n_samples = 100  # Instead of 10
+    # Save complete results
+    with open(save_dir / f'experiment_{timestamp}.json', 'w') as f:
+        json.dump(summary, f, indent=4)
     
-    # Generate more varied frequencies
-    freq_ranges = [(220, 440), (440, 880)]
-    audio_files = []
-    
-    for i in range(n_samples):
-        # Pick random frequency range
-        low, high = random.choice(freq_ranges)
-        freq = np.random.uniform(low, high)
-        
-        # Add some noise/variation
-        signal = np.sin(2 * np.pi * freq * t)
-        noise = np.random.normal(0, 0.01, len(t))
-        signal = signal + noise
-        
-        # Save audio file
-        filename = f'clip_{i}.wav'
-        filepath = audio_dir / filename
-        sf.write(filepath, signal, sr)
-        audio_files.append((str(filepath), freq))  # Store frequency for pairing
-    
-    # Create train/val splits
-    n_train = int(0.8 * len(audio_files))
-    train_files = audio_files[:n_train]
-    val_files = audio_files[n_train:]
-    
-    # Create more balanced pairs
-    def create_pairs(files):
-        pairs = []
-        # Similar pairs (same frequency range)
-        for i in range(len(files)):
-            for j in range(i + 1, len(files)):
-                if abs(files[i][1] - files[j][1]) / files[i][1] < 0.1:  # Within 10%
-                    pairs.append({
-                        'clip1_path': files[i][0],
-                        'clip2_path': files[j][0],
-                        'label': 1
-                    })
-                    if len(pairs) >= len(files):  # Control positive pair count
-                        break
-        
-        # Different pairs
-        n_neg = len(pairs)  # Match number of positive pairs
-        for i in range(n_neg):
-            idx1, idx2 = random.sample(range(len(files)), 2)
-            if abs(files[idx1][1] - files[idx2][1]) / files[idx1][1] > 0.5:  # Very different
-                pairs.append({
-                    'clip1_path': files[idx1][0],
-                    'clip2_path': files[idx2][0],
-                    'label': 0
-                })
-        return pairs
-    
-    # Create and save CSVs
-    train_pairs = create_pairs(train_files)
-    val_pairs = create_pairs(val_files)
-    
-    pd.DataFrame(train_pairs).to_csv(data_dir / 'train_pairs.csv', index=False)
-    pd.DataFrame(val_pairs).to_csv(data_dir / 'val_pairs.csv', index=False)
-    
-    logger.info(f"Created {len(train_pairs)} training pairs and {len(val_pairs)} validation pairs")
+    # Log key metrics
+    logger.info("\nExperiment Results:")
+    logger.info(f"ROC AUC Score: {metrics['evaluation']['roc_auc']:.3f}")
+    logger.info(f"Best Validation Loss: {min(metrics['val_loss']):.3f}")
+    logger.info("\nThreshold Analysis:")
+    for thresh_result in metrics['evaluation']['threshold_analysis']:
+        logger.info(
+            f"Threshold {thresh_result['threshold']:.2f}: "
+            f"Precision={thresh_result['precision']:.3f}, "
+            f"Recall={thresh_result['recall']:.3f}, "
+            f"FPR={thresh_result['false_positive_rate']:.3f}"
+        )
 
 if __name__ == "__main__":
     # Setup logging
     logging.basicConfig(
-        level=logging.DEBUG,  # Changed to DEBUG for more verbose output
+        level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    # Create test data
-    create_test_data()
+    # Create dataset from real audio files
+    train_csv, val_csv = create_dataset(
+        base_audio_dir='data/base_audio',
+        output_dir='data/processed'
+    )
     
     # Training configuration
     config = {
-        'epochs': 50,  # More epochs
-        'batch_size': 32,  # Larger batch size
-        'learning_rate': 1e-4,  # Lower learning rate
+        'epochs': 50,
+        'batch_size': 32,
+        'learning_rate': 1e-4,
         'val_freq': 1,
         'checkpoint_dir': 'checkpoints'
     }
     
-    # Train model
+    # Train and evaluate model
     try:
-        model = train(
-            train_csv='data/train_pairs.csv',
-            val_csv='data/val_pairs.csv',
-            config=config
+        model = train(train_csv, val_csv, config)
+        
+        # Run evaluation
+        test_loader = DataLoader(
+            PairedAudioDataset(val_csv),  # Using validation set for testing
+            batch_size=32,
+            shuffle=False,
+            num_workers=4
         )
-        logger.info("Training completed successfully!")
+        
+        results = evaluate_model(
+            model=model,
+            test_loader=test_loader,
+            save_dir='results',
+            device=config.device
+        )
+        
+        logger.info("Training and evaluation completed successfully!")
         
     except Exception as e:
         logger.error(f"Training failed: {str(e)}")

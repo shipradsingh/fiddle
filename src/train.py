@@ -233,7 +233,7 @@ if __name__ == "__main__":
         
         # Training configuration
         config = {
-            'epochs': 50,
+            'epochs': 11,
             'batch_size': 32,
             'learning_rate': 1e-4,
             'val_freq': 1,

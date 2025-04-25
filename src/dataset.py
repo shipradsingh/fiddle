@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 from pathlib import Path
 from typing import Tuple, Optional, Callable
 import os
+from data_processing import extract_mel_spectrogram, apply_augmentation
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,6 @@ class PairedAudioDataset(Dataset):
             # Convert to tensor with shape [1, height, width]
             mel_spec = torch.FloatTensor(mel_spec).unsqueeze(0)
             
-            logger.debug(f"Processed spectrogram shape: {mel_spec.shape}")
             return mel_spec
             
         except Exception as e:
@@ -143,7 +143,7 @@ class PairedAudioDataset(Dataset):
     def __len__(self) -> int:
         return len(self.pairs)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx):
         """Get a single pair of spectrograms and their similarity label."""
         try:
             row = self.pairs.iloc[idx]
@@ -159,6 +159,9 @@ class PairedAudioDataset(Dataset):
             # Convert label to tensor
             label = torch.FloatTensor([row['label']])
                 
+            if idx == 0:
+                logger.debug(f"Processed spectrogram shape: {x1.shape}")
+            
             return x1, x2, label
             
         except Exception as e:

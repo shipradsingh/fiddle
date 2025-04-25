@@ -8,3 +8,5 @@ jupyter
 soundfile
 logging
 seaborn
+tqdm
+# Add any other dependencies you need for your project

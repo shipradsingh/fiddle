@@ -135,7 +135,57 @@ def evaluate_model(
     return metrics
 
 if __name__ == "__main__":
-    # Configure all loggers to WARNING
+    import argparse
+    from model import SiameseNetwork
+    from dataset import PairedAudioDataset
+    
+    # Parse arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model_path', type=str, default='checkpoints/best_model.pt',
+                    help='Path to saved model')
+    parser.add_argument('--test_csv', type=str, default='data/processed/val_pairs.csv',
+                    help='Path to test CSV file')
+    parser.add_argument('--batch_size', type=int, default=32,
+                    help='Batch size for evaluation')
+    args = parser.parse_args()
+    
+    # Configure logging
     logging.getLogger().setLevel(logging.WARNING)
     for name in logging.root.manager.loggerDict:
         logging.getLogger(name).setLevel(logging.WARNING)
+    
+    try:
+        # Load model
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        model = SiameseNetwork().to(device)
+        model.load_state_dict(torch.load(args.model_path, map_location=device))
+        model.eval()
+        
+        # Create test dataloader
+        test_dataset = PairedAudioDataset(args.test_csv)
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=2,
+            pin_memory=True
+        )
+        
+        # Run evaluation
+        results = evaluate_model(
+            model=model,
+            test_loader=test_loader,
+            save_dir='results',
+            device=device
+        )
+        
+        # Print results
+        print("\nEvaluation Results:")
+        print(f"ROC AUC: {results['roc_auc']:.4f}")
+        print(f"Average Precision: {results['average_precision']:.4f}")
+        print("\nConfusion Matrix:")
+        print(np.array(results['confusion_matrix']))
+        
+    except Exception as e:
+        print(f"Evaluation failed: {str(e)}")
+        raise

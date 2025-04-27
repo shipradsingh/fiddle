@@ -2,3 +2,4 @@
 src/__pycache__/
 checkpoints
 data
+temp_fma

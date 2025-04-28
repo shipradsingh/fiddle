@@ -246,10 +246,6 @@ Error Analysis:
 
 ## Confusion Matrix
 
-[[799,   1],
-
- [  0, 800]]
-
 ![Confusion Matrix](/results/confusion_matrix.png)
 
 ## Key Observations:

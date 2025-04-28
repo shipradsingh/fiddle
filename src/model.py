@@ -80,6 +80,10 @@ class SiameseNetwork(nn.Module):
         # Initialize weights
         self.apply(self._init_weights)
     
+    def encode(self, x):
+        """Get embeddings from one branch of the network"""
+        return self.branch(x)  # Changed from self.encoder to self.branch
+    
     def _init_weights(self, m: nn.Module):
         if isinstance(m, nn.Conv2d):
             nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')

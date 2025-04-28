@@ -26,15 +26,17 @@ logger.setLevel(logging.INFO)
 warnings.filterwarnings('ignore')
 
 class TrainingConfig:
-    """Enhanced training configuration with regularization."""    
+    """Enhanced training configuration with GPU settings."""    
     def __init__(self, **kwargs):
-        self.epochs: int = kwargs.get('epochs', 50)  # Increased from 11
-        self.batch_size: int = kwargs.get('batch_size', 64)  # Increased from 32
-        self.learning_rate: float = kwargs.get('learning_rate', 1e-3)  # Increased from 1e-4
-        self.weight_decay: float = kwargs.get('weight_decay', 1e-4)  # Added L2 regularization
-        self.dropout_rate: float = kwargs.get('dropout_rate', 0.3)  # Added dropout rate
+        self.epochs: int = kwargs.get('epochs', 50)
+        self.batch_size: int = kwargs.get('batch_size', 128)  # Increased for GPU
+        self.learning_rate: float = kwargs.get('learning_rate', 2e-3)
+        self.weight_decay: float = kwargs.get('weight_decay', 1e-4)
+        self.dropout_rate: float = kwargs.get('dropout_rate', 0.3)
         self.val_freq: int = kwargs.get('val_freq', 1)
         self.checkpoint_dir: str = kwargs.get('checkpoint_dir', 'checkpoints')
+        self.num_workers: int = kwargs.get('num_workers', 0)  # Added for parallel loading
+        self.pin_memory: bool = kwargs.get('pin_memory', True)  # Added for GPU transfer
         self.device: str = kwargs.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
 
 def train_epoch(model: nn.Module,
@@ -52,7 +54,6 @@ def train_epoch(model: nn.Module,
     for x1, x2, label in pbar:
         x1, x2 = x1.to(device), x2.to(device)
         label = label.to(device).float().squeeze()
-        
         optimizer.zero_grad()
         output = model(x1, x2).squeeze()
         loss = criterion(output, label)
@@ -111,6 +112,9 @@ def train(train_csv: str, val_csv: str, config: Optional[Dict] = None) -> Tuple[
     else:
         config = TrainingConfig(**config)
     
+    # Initialize model
+    model = SiameseNetwork(dropout_rate=config.dropout_rate).to(config.device)
+
     logger.info(f"Training on device: {config.device}")
     
     # Initialize tracking variables
@@ -126,25 +130,22 @@ def train(train_csv: str, val_csv: str, config: Optional[Dict] = None) -> Tuple[
         'val_acc': []
     }
     
-    # Data loading
+    # Data loading with GPU optimization
     train_loader = DataLoader(
         PairedAudioDataset(train_csv, augment=True),
         batch_size=config.batch_size,
         shuffle=True,
-        num_workers=2,
-        pin_memory=True
+        num_workers=config.num_workers,
+        pin_memory=config.pin_memory
     )
     
     val_loader = DataLoader(
         PairedAudioDataset(val_csv),
         batch_size=config.batch_size,
         shuffle=False,
-        num_workers=2,
-        pin_memory=True
+        num_workers=config.num_workers,
+        pin_memory=config.pin_memory
     )
-    
-    # Model setup with dropout
-    model = SiameseNetwork(dropout_rate=config.dropout_rate).to(config.device)
     
     # Remove label smoothing for compatibility
     criterion = nn.BCEWithLogitsLoss()
@@ -163,7 +164,6 @@ def train(train_csv: str, val_csv: str, config: Optional[Dict] = None) -> Tuple[
         mode='min',
         factor=0.2,  # More aggressive reduction
         patience=4,   # Increased patience
-        verbose=True,
         min_lr=1e-6  # Add minimum learning rate
     )
     
@@ -227,10 +227,18 @@ def log_experiment_results(config: Dict, metrics: Dict, save_dir: str) -> None:
     logger.info(f"Experiment results saved to {save_path}")
 
 if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--num_workers', type=int, default=32)
+    parser.add_argument('--prefetch_factor', type=int, default=4)
+    parser.add_argument('--persistent_workers', type=bool, default=True)
+    args = parser.parse_args()
     try:
         # Define data paths
-        train_csv = 'data/processed/train_pairs.csv'
-        val_csv = 'data/processed/val_pairs.csv'
+        train_csv = '/scratch/alpine/shsi2591/fiddle/data/data/processed/train_pairs.csv'
+        val_csv = '/scratch/alpine/shsi2591/fiddle/data/data/processed/val_pairs.csv'
         
         # Create necessary directories
         Path('checkpoints').mkdir(exist_ok=True)
@@ -238,16 +246,19 @@ if __name__ == "__main__":
         
         # Enhanced training configuration
         config = {
-            'epochs': 15,              # Increased epochs
-            'batch_size': 32,          # Larger batch size
-            'learning_rate': 1e-3,     # Higher initial learning rate
-            'weight_decay': 1e-4,      # L2 regularization
-            'dropout_rate': 0.3,       # Moderate dropout
+            'epochs': 15,
+            'batch_size': args.batch_size,         # Increased for GPU
+            'learning_rate': 2e-3,     # Adjusted for larger batch
+            'weight_decay': 1e-4,
+            'dropout_rate': 0.3,
             'val_freq': 1,
             'checkpoint_dir': 'checkpoints',
-            'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+            'device': 'cpu',
+            'num_workers': args.num_workers,
+            'prefetch_factor': args.prefetch_factor,
+            'persistent_workers': args.persistent_workers,
+            'pin_memory': False  # Disable for CPU training
         }
-        
         # Verify data files exist
         if not (Path(train_csv).exists() and Path(val_csv).exists()):
             raise FileNotFoundError("Dataset files not found. Run process_fma.py first.")

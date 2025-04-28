@@ -6,7 +6,7 @@ scikit-learn
 pandas
 jupyter
 soundfile
-logging
 seaborn
 tqdm
+pydub
 # Add any other dependencies you need for your project

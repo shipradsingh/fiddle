@@ -1,4 +1,5 @@
 temp_fma
-data
+data/base_audio
+data/processed
 env
 src/__pycache__/
